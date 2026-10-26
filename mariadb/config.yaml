@@ -1,6 +1,6 @@
 ---
 version: dev
-breaking_versions: [3.0.0]
+breaking_versions: [3.0.0, 4.0.0]
 slug: mariadb
 name: MariaDB
 description: A SQL database server
