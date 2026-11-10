@@ -12,26 +12,9 @@ bashio::log.info "Start MariaDB client (to lock tables for backups)"
 # through /proc to send statements and to read their result.
 # Close the s6 notification fd &3 in the client so it is not inherited
 coproc mariadb --unbuffered --skip-column-names 3>&-
-readonly client_pid="${COPROC_PID}"
 exec 4>&"${COPROC[1]}"- 5<&"${COPROC[0]}"-
-
-# Stop the client together with the service. At the end of its input the
-# client quits, which releases the lock. A client that is still waiting for
-# the lock does not get that far, so terminate it to cancel the lock request.
-function stop_client() {
-    exec 4>&-
-    for _ in {1..10}; do
-        kill -0 "${client_pid}" 2> /dev/null || return 0
-        sleep 0.1
-    done
-    kill "${client_pid}" 2> /dev/null || true
-}
-trap stop_client TERM
 
 # We need to delay the starting of the dependent services until mysql is started
 echo "" >&3
 exec 3>&-
-
-# The first wait returns when the signal arrives, the second once the client
-# is gone
-wait "${client_pid}" || wait "${client_pid}" || true
+wait

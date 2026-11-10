@@ -17,13 +17,15 @@ if bashio::var.equals ${MARIADB_LOCK_CORE_PID} -1; then
     bashio::exit.nok
 fi
 
-# File descriptor &4 is used as stdin for mysql, because &0 is closed after the mariadb-lock-core service is started
+# File descriptor &4 is the stdin of the client and &5 its stdout. The client
+# runs the statements in order, so the result only shows up once the lock is
+# held. This can take a while if statements are still running, and new writes
+# are blocked meanwhile. The server gives up after the timeout, which makes
+# the client quit.
 # shellcheck disable=SC2086
-echo "FLUSH TABLES WITH READ LOCK; SELECT 'locked';" > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
+echo "SET lock_wait_timeout = ${LOCK_TIMEOUT}; FLUSH TABLES WITH READ LOCK; SELECT 'locked';" \
+    > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
 
-# File descriptor &5 is the stdout of mysql. The client runs the statements in
-# order, so the result only shows up once the lock is held. This can take a
-# while if statements are still running. New writes are blocked while waiting.
 # shellcheck disable=SC2086
 if ! read -r -t "${LOCK_TIMEOUT}" result <> /proc/${MARIADB_LOCK_CORE_PID}/fd/5 \
     || ! bashio::var.equals "${result}" "locked"; then
