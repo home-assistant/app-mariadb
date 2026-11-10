@@ -51,17 +51,17 @@ function sql_string() {
     printf '%s' "${value//\'/\'\'}"
 }
 
-# Run SQL statements and log an error if they fail. They are passed on stdin,
-# so that passwords do not show up in the process list. Only the error message
-# is logged, as the client would otherwise print the failed statement, which
-# may hold a password.
+# Run SQL statements. A failure is logged but not fatal, so that a mistake in
+# one option does not keep the database from starting. The statements are
+# passed on stdin, so that passwords do not show up in the process list. Only
+# the error message is logged, as the client would otherwise print the failed
+# statement, which may hold a password.
 function sql_execute() {
     local description="${1}"
     local output
 
     if ! output=$(mariadb 2>&1 <<< "${2}"); then
-        bashio::log.error "Failed to ${description}: $(grep '^ERROR' <<< "${output}")"
-        return 1
+        bashio::log.error "Failed to ${description}: $(grep '^ERROR' <<< "${output}" || true)"
     fi
 }
 
@@ -70,7 +70,7 @@ bashio::log.info "Ensure databases exists"
 for database in $(bashio::config "databases"); do
     bashio::log.info "Create database ${database}"
     sql_execute "create database ${database}" \
-        "CREATE DATABASE IF NOT EXISTS \`${database}\`;" || true
+        "CREATE DATABASE IF NOT EXISTS \`${database}\`;"
 done
 
 # Init logins
@@ -83,7 +83,7 @@ for login in $(bashio::config "logins|keys"); do
     sql_execute "create or update user ${USERNAME}" "
         CREATE USER IF NOT EXISTS '${USERNAME}'@'%' IDENTIFIED BY '${PASSWORD}';
         SET PASSWORD FOR '${USERNAME}'@'%' = PASSWORD('${PASSWORD}');
-    " || true
+    "
 done
 
 # Init rights
@@ -103,7 +103,7 @@ for right in $(bashio::config "rights|keys"); do
     fi
 
     sql_execute "grant ${PRIVILEGES} to ${USERNAME} on ${DATABASE}" \
-        "GRANT ${PRIVILEGES} ON \`${DATABASE}\`.* TO '${USERNAME}'@'%';" || true
+        "GRANT ${PRIVILEGES} ON \`${DATABASE}\`.* TO '${USERNAME}'@'%';"
 done
 
 # Generate service user
@@ -116,7 +116,7 @@ sql_execute "set up the service user" "
     CREATE USER IF NOT EXISTS 'service'@'172.30.33.%' IDENTIFIED BY '${SECRET}';
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.32.%' WITH GRANT OPTION;
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.33.%' WITH GRANT OPTION;
-" || true
+"
 
 # Flush privileges
 mariadb -e "FLUSH PRIVILEGES;" 2> /dev/null || true
