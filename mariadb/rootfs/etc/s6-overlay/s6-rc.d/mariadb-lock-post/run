@@ -4,10 +4,11 @@
 # ==============================================================================
 # Lock tables for backups
 # ==============================================================================
-readonly LOCK_TIMEOUT=60
+# Same as the recorder uses for its SQLite database
+readonly LOCK_TIMEOUT=30
 
 declare MARIADB_LOCK_CORE_PID
-declare LOCK_MARKER
+declare result
 
 MARIADB_LOCK_CORE_PID=$(s6-svstat -o pid "/run/service/mariadb-lock-core")
 # shellcheck disable=SC2086
@@ -16,25 +17,18 @@ if bashio::var.equals ${MARIADB_LOCK_CORE_PID} -1; then
     bashio::exit.nok
 fi
 
-LOCK_MARKER="/run/mariadb-lock-${MARIADB_LOCK_CORE_PID}"
-rm -f "${LOCK_MARKER}"
-
 # File descriptor &4 is used as stdin for mysql, because &0 is closed after the mariadb-lock-core service is started
-# The client runs its input in order, so it only creates the marker file once
-# the lock is held. This can take a while if statements are still running.
 # shellcheck disable=SC2086
-{
-    echo "FLUSH TABLES WITH READ LOCK;"
-    echo "\\! touch ${LOCK_MARKER}"
-} > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
+echo "FLUSH TABLES WITH READ LOCK; SELECT 'locked';" > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
 
-for (( i = 0; i < LOCK_TIMEOUT * 10; i++ )); do
-    if bashio::fs.file_exists "${LOCK_MARKER}"; then
-        bashio::log.info "MariaDB tables locked"
-        bashio::exit.ok
-    fi
-    sleep 0.1
-done
+# File descriptor &5 is the stdout of mysql. The client runs the statements in
+# order, so the result only shows up once the lock is held. This can take a
+# while if statements are still running. New writes are blocked while waiting.
+# shellcheck disable=SC2086
+if ! read -r -t "${LOCK_TIMEOUT}" result <> /proc/${MARIADB_LOCK_CORE_PID}/fd/5 \
+    || ! bashio::var.equals "${result}" "locked"; then
+    bashio::log.error "MariaDB tables not locked within ${LOCK_TIMEOUT} seconds"
+    bashio::exit.nok
+fi
 
-bashio::log.error "MariaDB tables not locked after ${LOCK_TIMEOUT} seconds"
-bashio::exit.nok
+bashio::log.info "MariaDB tables locked"
