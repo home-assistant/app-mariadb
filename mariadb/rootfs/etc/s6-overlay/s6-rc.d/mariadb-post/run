@@ -51,26 +51,12 @@ function sql_string() {
     printf '%s' "${value//\'/\'\'}"
 }
 
-# Run SQL statements. A failure is logged but not fatal, so that a mistake in
-# one option does not keep the database from starting. The statements are
-# passed on stdin, so that passwords do not show up in the process list. Only
-# the error message is logged, as the client would otherwise print the failed
-# statement, which may hold a password.
-function sql_execute() {
-    local description="${1}"
-    local output
-
-    if ! output=$(mariadb 2>&1 <<< "${2}"); then
-        bashio::log.error "Failed to ${description}: $(grep '^ERROR' <<< "${output}" || true)"
-    fi
-}
-
 # Init databases
 bashio::log.info "Ensure databases exists"
 for database in $(bashio::config "databases"); do
     bashio::log.info "Create database ${database}"
-    sql_execute "create database ${database}" \
-        "CREATE DATABASE IF NOT EXISTS \`${database}\`;"
+    mariadb -e "CREATE DATABASE IF NOT EXISTS \`${database}\`;" \
+        || bashio::log.error "Failed to create database ${database}"
 done
 
 # Init logins
@@ -80,10 +66,14 @@ for login in $(bashio::config "logins|keys"); do
     PASSWORD=$(sql_string "$(bashio::config "logins[${login}].password")")
 
     bashio::log.info "Create or update user ${USERNAME}"
-    sql_execute "create or update user ${USERNAME}" "
+    # The statements hold the password. Pass them on stdin to keep it out of
+    # the process list, and drop the client output, as it prints a failed
+    # statement. The escaping relies on backslash escapes being enabled.
+    mariadb &> /dev/null <<< "
+        SET SESSION sql_mode = '';
         CREATE USER IF NOT EXISTS '${USERNAME}'@'%' IDENTIFIED BY '${PASSWORD}';
         SET PASSWORD FOR '${USERNAME}'@'%' = PASSWORD('${PASSWORD}');
-    "
+    " || bashio::log.error "Failed to create or update user ${USERNAME}"
 done
 
 # Init rights
@@ -102,8 +92,8 @@ for right in $(bashio::config "rights|keys"); do
         bashio::log.info "Granting all privileges to ${USERNAME} on ${DATABASE}"
     fi
 
-    sql_execute "grant ${PRIVILEGES} to ${USERNAME} on ${DATABASE}" \
-        "GRANT ${PRIVILEGES} ON \`${DATABASE}\`.* TO '${USERNAME}'@'%';"
+    mariadb -e "GRANT ${PRIVILEGES} ON \`${DATABASE}\`.* TO '${USERNAME}'@'%';" \
+        || bashio::log.error "Failed to grant ${PRIVILEGES} to ${USERNAME} on ${DATABASE}"
 done
 
 # Generate service user
@@ -111,12 +101,13 @@ if ! bashio::fs.file_exists "/data/secret"; then
     pwgen 64 1 > /data/secret
 fi
 SECRET=$(</data/secret)
-sql_execute "set up the service user" "
+# Holds the secret, so same handling as for the logins above
+mariadb &> /dev/null <<< "
     CREATE USER IF NOT EXISTS 'service'@'172.30.32.%' IDENTIFIED BY '${SECRET}';
     CREATE USER IF NOT EXISTS 'service'@'172.30.33.%' IDENTIFIED BY '${SECRET}';
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.32.%' WITH GRANT OPTION;
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.33.%' WITH GRANT OPTION;
-"
+" || bashio::log.error "Failed to set up the service user"
 
 # Flush privileges
 mariadb -e "FLUSH PRIVILEGES;" 2> /dev/null || true

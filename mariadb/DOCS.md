@@ -42,7 +42,7 @@ rights:
 ### Option: `databases` (required)
 
 Database name, e.g., `homeassistant`. Multiple are allowed.
-A name may only contain letters, digits, `_` and `-`.
+A name may only contain letters, digits, `_`, `$` and `-`.
 
 ### Option: `logins` (required)
 
