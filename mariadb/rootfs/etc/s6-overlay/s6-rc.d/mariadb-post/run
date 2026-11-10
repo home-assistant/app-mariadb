@@ -44,56 +44,46 @@ if bashio::var.true "${NEW_INSTALL}"; then
 EOSQL
 fi
 
-# Escape a value for use inside a single quoted SQL string literal
+# Escape a value for use inside a single quoted SQL string literal. Only
+# passwords need this, the options schema restricts database and user names.
 function sql_string() {
     local value="${1//\\/\\\\}"
     printf '%s' "${value//\'/\'\'}"
 }
 
-# Quote a value for use as an SQL identifier
-function sql_identifier() {
-    # shellcheck disable=SC2016
-    printf '`%s`' "${1//\`/\`\`}"
-}
-
-# Run SQL statements. They are passed on stdin, so that passwords do not show
-# up in the process list. On failure only the error message is logged, as the
-# client would otherwise print the failed statement, which may hold a password.
+# Run SQL statements and log an error if they fail. They are passed on stdin,
+# so that passwords do not show up in the process list. Only the error message
+# is logged, as the client would otherwise print the failed statement, which
+# may hold a password.
 function sql_execute() {
+    local description="${1}"
     local output
 
-    if ! output=$(mariadb 2>&1 <<< "${1}"); then
-        bashio::log.error "$(grep '^ERROR' <<< "${output}")"
+    if ! output=$(mariadb 2>&1 <<< "${2}"); then
+        bashio::log.error "Failed to ${description}: $(grep '^ERROR' <<< "${output}")"
         return 1
     fi
 }
 
 # Init databases
 bashio::log.info "Ensure databases exists"
-while IFS= read -r database; do
-    bashio::var.is_empty "${database}" && continue
-
+for database in $(bashio::config "databases"); do
     bashio::log.info "Create database ${database}"
-    if ! sql_execute "CREATE DATABASE IF NOT EXISTS $(sql_identifier "${database}");"; then
-        bashio::log.error "Failed to create database ${database}"
-    fi
-done <<< "$(bashio::config "databases")"
+    sql_execute "create database ${database}" \
+        "CREATE DATABASE IF NOT EXISTS \`${database}\`;" || true
+done
 
 # Init logins
 bashio::log.info "Ensure users exists and are updated"
 for login in $(bashio::config "logins|keys"); do
     USERNAME=$(bashio::config "logins[${login}].username")
-    PASSWORD=$(bashio::config "logins[${login}].password")
-    SQL_USER="'$(sql_string "${USERNAME}")'@'%'"
-    SQL_PASSWORD="'$(sql_string "${PASSWORD}")'"
+    PASSWORD=$(sql_string "$(bashio::config "logins[${login}].password")")
 
     bashio::log.info "Create or update user ${USERNAME}"
-    if ! sql_execute "
-        CREATE USER IF NOT EXISTS ${SQL_USER} IDENTIFIED BY ${SQL_PASSWORD};
-        SET PASSWORD FOR ${SQL_USER} = PASSWORD(${SQL_PASSWORD});
-    "; then
-        bashio::log.error "Failed to create or update user ${USERNAME}"
-    fi
+    sql_execute "create or update user ${USERNAME}" "
+        CREATE USER IF NOT EXISTS '${USERNAME}'@'%' IDENTIFIED BY '${PASSWORD}';
+        SET PASSWORD FOR '${USERNAME}'@'%' = PASSWORD('${PASSWORD}');
+    " || true
 done
 
 # Init rights
@@ -101,22 +91,19 @@ bashio::log.info "Init/Update rights"
 for right in $(bashio::config "rights|keys"); do
     USERNAME=$(bashio::config "rights[${right}].username")
     DATABASE=$(bashio::config "rights[${right}].database")
-    SQL_USER="'$(sql_string "${USERNAME}")'@'%'"
-    SQL_DATABASE=$(sql_identifier "${DATABASE}")
 
     if bashio::config.exists "rights[${right}].privileges"; then
         PRIVILEGES=$(bashio::config "rights[${right}].privileges | (if type == \"array\" then join(\", \") else . end)")
         bashio::log.info "Granting ${PRIVILEGES} to ${USERNAME} on ${DATABASE}"
         # Fails if the user has no privileges on the database yet, which is fine
-        sql_execute "REVOKE ALL PRIVILEGES ON ${SQL_DATABASE}.* FROM ${SQL_USER};" &> /dev/null || true
+        mariadb -e "REVOKE ALL PRIVILEGES ON \`${DATABASE}\`.* FROM '${USERNAME}'@'%';" &> /dev/null || true
     else
         PRIVILEGES="ALL PRIVILEGES"
         bashio::log.info "Granting all privileges to ${USERNAME} on ${DATABASE}"
     fi
 
-    if ! sql_execute "GRANT ${PRIVILEGES} ON ${SQL_DATABASE}.* TO ${SQL_USER};"; then
-        bashio::log.error "Failed to grant ${PRIVILEGES} to ${USERNAME} on ${DATABASE}"
-    fi
+    sql_execute "grant ${PRIVILEGES} to ${USERNAME} on ${DATABASE}" \
+        "GRANT ${PRIVILEGES} ON \`${DATABASE}\`.* TO '${USERNAME}'@'%';" || true
 done
 
 # Generate service user
@@ -124,15 +111,12 @@ if ! bashio::fs.file_exists "/data/secret"; then
     pwgen 64 1 > /data/secret
 fi
 SECRET=$(</data/secret)
-SQL_SECRET="'$(sql_string "${SECRET}")'"
-if ! sql_execute "
-    CREATE USER IF NOT EXISTS 'service'@'172.30.32.%' IDENTIFIED BY ${SQL_SECRET};
-    CREATE USER IF NOT EXISTS 'service'@'172.30.33.%' IDENTIFIED BY ${SQL_SECRET};
+sql_execute "set up the service user" "
+    CREATE USER IF NOT EXISTS 'service'@'172.30.32.%' IDENTIFIED BY '${SECRET}';
+    CREATE USER IF NOT EXISTS 'service'@'172.30.33.%' IDENTIFIED BY '${SECRET}';
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.32.%' WITH GRANT OPTION;
     GRANT ALL PRIVILEGES ON *.* TO 'service'@'172.30.33.%' WITH GRANT OPTION;
-"; then
-    bashio::log.error "Failed to set up the service user"
-fi
+" || true
 
 # Flush privileges
 mariadb -e "FLUSH PRIVILEGES;" 2> /dev/null || true

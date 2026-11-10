@@ -25,17 +25,17 @@ ports:
   3306/tcp: null
 schema:
   databases:
-    - str
+    - "match(^[A-Za-z0-9_-]{1,64}$)"
   logins:
-    - username: str
+    - username: "match(^[A-Za-z0-9_.-]{1,128}$)"
       password: password
   rights:
-    - database: str
+    - database: "match(^[A-Za-z0-9_-]{1,64}$)"
       privileges:
         - "list(ALTER|CREATE|CREATE ROUTINE|CREATE TEMPORARY TABLES|\
           CREATE VIEW|DELETE|DELETE HISTORY|DROP|EVENT|GRANT OPTION|INDEX|\
           INSERT|LOCK TABLES|SELECT|SHOW VIEW|TRIGGER|UPDATE)?"
-      username: str
+      username: "match(^[A-Za-z0-9_.-]{1,128}$)"
   mariadb_server_args:
     - str?
 services:
