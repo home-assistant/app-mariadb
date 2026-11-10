@@ -4,8 +4,11 @@
 # ==============================================================================
 # Lock tables for backups
 # ==============================================================================
+readonly LOCK_TIMEOUT=60
 
 declare MARIADB_LOCK_CORE_PID
+declare LOCK_MARKER
+
 MARIADB_LOCK_CORE_PID=$(s6-svstat -o pid "/run/service/mariadb-lock-core")
 # shellcheck disable=SC2086
 if bashio::var.equals ${MARIADB_LOCK_CORE_PID} -1; then
@@ -13,8 +16,25 @@ if bashio::var.equals ${MARIADB_LOCK_CORE_PID} -1; then
     bashio::exit.nok
 fi
 
-# File descriptor &4 is used as stdin for mysql, because &0 is closed after the mariadb-lock-core service is started
-# shellcheck disable=SC2086
-echo "FLUSH TABLES WITH READ LOCK;" > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
+LOCK_MARKER="/run/mariadb-lock-${MARIADB_LOCK_CORE_PID}"
+rm -f "${LOCK_MARKER}"
 
-bashio::log.info "MariaDB tables locked"
+# File descriptor &4 is used as stdin for mysql, because &0 is closed after the mariadb-lock-core service is started
+# The client runs its input in order, so it only creates the marker file once
+# the lock is held. This can take a while if statements are still running.
+# shellcheck disable=SC2086
+{
+    echo "FLUSH TABLES WITH READ LOCK;"
+    echo "\\! touch ${LOCK_MARKER}"
+} > /proc/${MARIADB_LOCK_CORE_PID}/fd/4
+
+for (( i = 0; i < LOCK_TIMEOUT * 10; i++ )); do
+    if bashio::fs.file_exists "${LOCK_MARKER}"; then
+        bashio::log.info "MariaDB tables locked"
+        bashio::exit.ok
+    fi
+    sleep 0.1
+done
+
+bashio::log.error "MariaDB tables not locked after ${LOCK_TIMEOUT} seconds"
+bashio::exit.nok

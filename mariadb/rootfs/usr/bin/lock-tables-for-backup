@@ -7,4 +7,10 @@
 
 # Redirect stdout to the add-on's log
 exec &> /proc/1/fd/1
-exec s6-rc -v 2 -u change mariadb-lock
+
+# Supervisor does not run the post backup command if this one fails, so release
+# a lock that is still pending
+if ! s6-rc -v 2 -u change mariadb-lock; then
+    s6-rc -v 2 -d change mariadb-lock || true
+    exit 1
+fi
