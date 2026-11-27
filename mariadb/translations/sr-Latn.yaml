@@ -1,0 +1,13 @@
+---
+configuration:
+  databases:
+    name: Baze podataka
+    description: Nazivi baza podataka.
+  logins:
+    name: Korisnički nalozi
+    description: Ovaj odeljak definiše kreiranje korisnika u MariaDB-u.
+  rights:
+    name: Prava pristupa
+    description: Ovaj odeljak dodeljuje privilegije korisnicima u MariaDB-u.
+network:
+  3306/tcp: Port za pristup sistemu baze podataka.
